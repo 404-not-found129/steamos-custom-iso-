@@ -59,17 +59,68 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# Host detection
+# ---------------------------------------------------------------------------
+is_arch_host() {
+    grep -qi 'arch\|manjaro\|endeavour\|garuda\|cachyos' /etc/os-release 2>/dev/null
+}
+
+# Returns the first available container runtime (podman preferred on Fedora).
+container_runtime() {
+    if command -v podman &>/dev/null; then echo "podman"
+    elif command -v docker &>/dev/null; then echo "docker"
+    else echo ""
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Container-based build (non-Arch hosts: Fedora, Ubuntu, Debian, etc.)
+# ---------------------------------------------------------------------------
+build_in_container() {
+    local runtime
+    runtime="$(container_runtime)"
+
+    if [[ -z "${runtime}" ]]; then
+        die "No container runtime found. Install podman (dnf install podman) or docker, then retry."
+    fi
+
+    info "Non-Arch host detected. Routing build through an Arch Linux container via ${runtime}."
+    info "This avoids installing Arch-specific tools (archiso, pacman) on your system."
+
+    check_disk_space
+
+    # Rootless podman works fine for the bind-mount; docker may need sudo.
+    # We re-exec the build script inside the container, now on an actual Arch host.
+    "${runtime}" run --rm \
+        --privileged \
+        -v "${SCRIPT_DIR}:/workspace" \
+        -w /workspace \
+        archlinux:latest \
+        bash -c "
+            set -euo pipefail
+            pacman -Sy --noconfirm --needed archiso arch-install-scripts \
+                libisoburn squashfs-tools dosfstools mtools > /dev/null 2>&1
+            bash /workspace/build.sh _native_build
+        "
+
+    # ISO lands in out/ on the host (bind-mount).
+    local iso_file
+    iso_file=$(find "${OUT_DIR}" -maxdepth 1 -name "*.iso" 2>/dev/null | head -n1)
+    if [[ -z "${iso_file}" ]]; then
+        die "Container build completed but no ISO found in ${OUT_DIR}."
+    fi
+    local iso_size; iso_size=$(du -sh "${iso_file}" | cut -f1)
+    success "ISO built via container: ${iso_file} (${iso_size})"
+    generate_checksums
+    success "Build complete. Output: ${OUT_DIR}/"
+}
+
+# ---------------------------------------------------------------------------
 # Validation helpers
 # ---------------------------------------------------------------------------
 check_root() {
     if [[ "${EUID}" -ne 0 ]]; then
         die "This script must be run as root. Use: sudo ${BASH_SOURCE[0]}"
-    fi
-}
-
-check_arch() {
-    if ! grep -qi 'arch\|manjaro\|endeavour\|garuda' /etc/os-release 2>/dev/null; then
-        warn "Non-Arch-based host detected. Build environment may be incompatible."
     fi
 }
 
@@ -97,7 +148,7 @@ check_dependencies() {
     done
 
     if (( ${#missing[@]} > 0 )); then
-        warn "Missing tools: ${missing[*]}. Attempting to install..."
+        warn "Missing tools: ${missing[*]}. Attempting to install via pacman..."
         install_dependencies
     else
         success "All build dependencies present."
@@ -105,7 +156,7 @@ check_dependencies() {
 }
 
 # ---------------------------------------------------------------------------
-# Dependency installation
+# Dependency installation (Arch hosts only)
 # ---------------------------------------------------------------------------
 install_dependencies() {
     info "Installing build dependencies via pacman..."
@@ -206,18 +257,21 @@ usage() {
 Usage: $(basename "$0") [COMMAND]
 
 Commands:
-  build     Build the custom SteamOS ISO (default)
-  clean     Remove all build artifacts and output
-  deps      Install build dependencies only
-  validate  Validate the ISO profile without building
+  build          Build the custom SteamOS ISO (default)
+                 On Arch hosts: builds natively.
+                 On other hosts (Fedora, Ubuntu, etc.): auto-routes through
+                 an Arch Linux container via podman or docker.
+  clean          Remove all build artifacts and output
+  deps           Install build dependencies only (Arch hosts only)
+  validate       Validate the ISO profile without building
 
 Options:
-  -h, --help   Show this help message
+  -h, --help     Show this help message
 
 Examples:
-  sudo $(basename "$0") build
+  sudo $(basename "$0") build        # Works on Arch and non-Arch alike
   sudo $(basename "$0") clean
-  sudo $(basename "$0") deps
+  $(basename "$0") validate          # No root needed
 EOF
 }
 
@@ -232,8 +286,23 @@ main() {
 
     case "${command}" in
         build)
-            check_root
-            check_arch
+            if is_arch_host; then
+                # Native Arch build path
+                check_root
+                check_disk_space
+                check_dependencies
+                prepare_workspace
+                validate_profile
+                build_iso
+                generate_checksums
+                success "Build complete. Output: ${OUT_DIR}/"
+            else
+                # Non-Arch host (Fedora, Ubuntu, Debian, etc.): use a container
+                build_in_container
+            fi
+            ;;
+        # Internal command invoked inside the Arch container — never call directly.
+        _native_build)
             check_disk_space
             check_dependencies
             prepare_workspace
@@ -247,6 +316,9 @@ main() {
             clean_workspace
             ;;
         deps)
+            if ! is_arch_host; then
+                die "'deps' installs via pacman and is only supported on Arch-based hosts. On Fedora/Ubuntu, use 'build' — it handles deps inside a container automatically."
+            fi
             check_root
             install_dependencies
             ;;

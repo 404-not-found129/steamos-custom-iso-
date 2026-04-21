@@ -23,20 +23,35 @@ A custom Arch-based live ISO modelled after SteamOS, with NVIDIA proprietary dri
 
 | Requirement | Minimum |
 |-------------|---------|
-| OS | Arch Linux (or Arch-based: Manjaro, EndeavourOS, etc.) |
+| OS | **Any Linux** — Arch native or any distro with Podman/Docker |
 | Disk space | **20 GB** free |
 | RAM | 4 GB (8 GB recommended) |
 | CPU | x86\_64, any modern CPU |
 | Privileges | **root** (`sudo`) |
 
-### Build Dependencies (auto-installed by `build.sh`)
+`archiso` is an Arch-only tool. `build.sh` handles this automatically:
 
-- `archiso`
-- `arch-install-scripts`
-- `libisoburn` (xorriso)
-- `squashfs-tools`
-- `dosfstools`
-- `mtools`
+| Host OS | How it builds |
+|---------|--------------|
+| Arch, Manjaro, EndeavourOS, CachyOS | Native — installs deps via `pacman` |
+| Fedora, Ubuntu, Debian, openSUSE, etc. | Auto-routes through an `archlinux:latest` container via **Podman** (preferred) or Docker |
+
+On Fedora, Podman is already installed. No extra setup needed — just run `sudo ./build.sh build`.
+
+### Build Dependencies
+
+On **Arch hosts**, these are auto-installed via `pacman`:
+- `archiso`, `arch-install-scripts`, `libisoburn`, `squashfs-tools`, `dosfstools`, `mtools`
+
+On **non-Arch hosts**, only a container runtime is needed:
+```bash
+# Fedora (Podman is pre-installed)
+sudo dnf install podman   # already present on most Fedora installs
+
+# Ubuntu / Debian
+sudo apt install podman
+# or: sudo apt install docker.io
+```
 
 ---
 
